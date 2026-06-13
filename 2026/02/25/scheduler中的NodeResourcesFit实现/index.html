@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  
+  <title>scheduler中的NodeResourcesFit实现 | Li Zhou&#39;s blog</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+  <meta name="description" content="本文将介绍下Kubernetes中的NodeResourcesFit调度插件的实现。 基本介绍NodeResourcesFit插件是基于节点资源的调度插件，除了支持节点资源的过滤之外，还支持LeastAllocated(最少资源优先)、MostAllocated（最多资源优先）、 RequestedToCapacityRatio（基于请求量与容量的比率）多个节点优选策略。 实现预选节点的预选主要是">
+<meta property="og:type" content="article">
+<meta property="og:title" content="scheduler中的NodeResourcesFit实现">
+<meta property="og:url" content="http://zhouli-95.github.io/2026/02/25/scheduler%E4%B8%AD%E7%9A%84NodeResourcesFit%E5%AE%9E%E7%8E%B0/index.html">
+<meta property="og:site_name" content="Li Zhou&#39;s blog">
+<meta property="og:description" content="本文将介绍下Kubernetes中的NodeResourcesFit调度插件的实现。 基本介绍NodeResourcesFit插件是基于节点资源的调度插件，除了支持节点资源的过滤之外，还支持LeastAllocated(最少资源优先)、MostAllocated（最多资源优先）、 RequestedToCapacityRatio（基于请求量与容量的比率）多个节点优选策略。 实现预选节点的预选主要是">
+<meta property="og:locale" content="zh_CN">
+<meta property="article:published_time" content="2026-02-25T12:22:27.000Z">
+<meta property="article:modified_time" content="2026-02-26T12:38:23.733Z">
+<meta property="article:author" content="Li Zhou">
+<meta property="article:tag" content="kubernetes">
+<meta property="article:tag" content="scheduler">
+<meta name="twitter:card" content="summary">
+  
+    <link rel="alternate" href="/atom.xml" title="Li Zhou's blog" type="application/atom+xml">
+  
+  
+    <link rel="shortcut icon" href="/favicon.png">
+  
+  
+  
+<link rel="stylesheet" href="/css/style.css">
+
+  
+    
+<link rel="stylesheet" href="/fancybox/jquery.fancybox.min.css">
+
+  
+  
+<meta name="generator" content="Hexo 7.3.0"></head>
+
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap">
+        <a href="/" id="logo">Li Zhou&#39;s blog</a>
+      </h1>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"><span class="fa fa-bars"></span></a>
+        
+          <a class="main-nav-link" href="/">Home</a>
+        
+          <a class="main-nav-link" href="/archives">Archives</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+        
+          <a class="nav-icon" href="/atom.xml" title="RSS 订阅"><span class="fa fa-rss"></span></a>
+        
+        <a class="nav-icon nav-search-btn" title="搜索"><span class="fa fa-search"></span></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="//google.com/search" method="get" accept-charset="UTF-8" class="search-form"><input type="search" name="q" class="search-form-input" placeholder="搜索"><button type="submit" class="search-form-submit">&#xF002;</button><input type="hidden" name="sitesearch" value="http://zhouli-95.github.io"></form>
+      </div>
+    </div>
+  </div>
+</header>
+
+      <div class="outer">
+        <section id="main"><article id="post-scheduler中的NodeResourcesFit实现" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2026/02/25/scheduler%E4%B8%AD%E7%9A%84NodeResourcesFit%E5%AE%9E%E7%8E%B0/" class="article-date">
+  <time class="dt-published" datetime="2026-02-25T12:22:27.000Z" itemprop="datePublished">2026-02-25</time>
+</a>
+    
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 class="p-name article-title" itemprop="headline name">
+      scheduler中的NodeResourcesFit实现
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <p>本文将介绍下Kubernetes中的NodeResourcesFit调度插件的实现。</p>
+<h2 id="基本介绍"><a href="#基本介绍" class="headerlink" title="基本介绍"></a>基本介绍</h2><p>NodeResourcesFit插件是基于节点资源的调度插件，除了支持节点资源的过滤之外，还支持LeastAllocated(最少资源优先)、MostAllocated（最多资源优先）、 RequestedToCapacityRatio（基于请求量与容量的比率）多个节点优选策略。</p>
+<h2 id="实现"><a href="#实现" class="headerlink" title="实现"></a>实现</h2><h3 id="预选"><a href="#预选" class="headerlink" title="预选"></a>预选</h3><p>节点的预选主要是在Filter阶段实现，这里先在PreFilter阶段计算了Pod的请求量并保存下来，以便在Filter阶段不需要重复计算。</p>
+<h4 id="PreFilter"><a href="#PreFilter" class="headerlink" title="PreFilter"></a>PreFilter</h4><p>在PreFilter函数中，主要是调用了computePodResourceRequest函数计算Pod的资源请求量，并保存在cycleState中。</p>
+<figure class="highlight golang"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">type</span> preFilterState <span class="keyword">struct</span> &#123;</span><br><span class="line">	framework.Resource</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(f *Fit)</span></span> PreFilter(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod) (*framework.PreFilterResult, *framework.Status) &#123;</span><br><span class="line">	<span class="keyword">if</span> !f.enableSidecarContainers &amp;&amp; hasRestartableInitContainer(pod) &#123;</span><br><span class="line">		<span class="comment">// Scheduler will calculate resources usage for a Pod containing</span></span><br><span class="line">		<span class="comment">// restartable init containers that will be equal or more than kubelet will</span></span><br><span class="line">		<span class="comment">// require to run the Pod. So there will be no overbooking. However, to</span></span><br><span class="line">		<span class="comment">// avoid the inconsistency in resource calculation between the scheduler</span></span><br><span class="line">		<span class="comment">// and the older (before v1.28) kubelet, make the Pod unschedulable.</span></span><br><span class="line">		<span class="keyword">return</span> <span class="literal">nil</span>, framework.NewStatus(framework.UnschedulableAndUnresolvable, <span class="string">&quot;Pod has a restartable init container and the SidecarContainers feature is disabled&quot;</span>)</span><br><span class="line">	&#125;</span><br><span class="line">	cycleState.Write(preFilterStateKey, computePodResourceRequest(pod, ResourceRequestsOptions&#123;EnablePodLevelResources: f.enablePodLevelResources&#125;))</span><br><span class="line">	<span class="keyword">return</span> <span class="literal">nil</span>, <span class="literal">nil</span></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">computePodResourceRequest</span><span class="params">(pod *v1.Pod, opts ResourceRequestsOptions)</span></span> *preFilterState &#123;</span><br><span class="line">	<span class="comment">// pod hasn&#x27;t scheduled yet so we don&#x27;t need to worry about InPlacePodVerticalScalingEnabled</span></span><br><span class="line">	reqs := resource.PodRequests(pod, resource.PodResourcesOptions&#123;</span><br><span class="line">		<span class="comment">// SkipPodLevelResources is set to false when PodLevelResources feature is enabled.</span></span><br><span class="line">		SkipPodLevelResources: !opts.EnablePodLevelResources,</span><br><span class="line">	&#125;)</span><br><span class="line">	result := &amp;preFilterState&#123;&#125;</span><br><span class="line">	result.SetMaxResource(reqs)</span><br><span class="line">	<span class="keyword">return</span> result</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<h4 id="Filter"><a href="#Filter" class="headerlink" title="Filter"></a>Filter</h4><p>在Filter函数中，首先调用getPreFilterState函数从cycleState取出Pod的资源请求量，然后调用fitsRequest函数计算出节点nodeInfo上不满足的资源量。fitsRequest函数中主要判断了以下条件是否满足：</p>
+<ol>
+<li>判断节点上的Pod数量是否超过限制</li>
+<li>判断节点上的CPU是否满足请求</li>
+<li>判断节点上的Memory是否满足请求</li>
+<li>判断节点上的EphemeralStorage是否满足请求</li>
+<li>判断节点上除了被忽略之外的扩展资源是否满足请求</li>
+</ol>
+<figure class="highlight golang"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br><span class="line">45</span><br><span class="line">46</span><br><span class="line">47</span><br><span class="line">48</span><br><span class="line">49</span><br><span class="line">50</span><br><span class="line">51</span><br><span class="line">52</span><br><span class="line">53</span><br><span class="line">54</span><br><span class="line">55</span><br><span class="line">56</span><br><span class="line">57</span><br><span class="line">58</span><br><span class="line">59</span><br><span class="line">60</span><br><span class="line">61</span><br><span class="line">62</span><br><span class="line">63</span><br><span class="line">64</span><br><span class="line">65</span><br><span class="line">66</span><br><span class="line">67</span><br><span class="line">68</span><br><span class="line">69</span><br><span class="line">70</span><br><span class="line">71</span><br><span class="line">72</span><br><span class="line">73</span><br><span class="line">74</span><br><span class="line">75</span><br><span class="line">76</span><br><span class="line">77</span><br><span class="line">78</span><br><span class="line">79</span><br><span class="line">80</span><br><span class="line">81</span><br><span class="line">82</span><br><span class="line">83</span><br><span class="line">84</span><br><span class="line">85</span><br><span class="line">86</span><br><span class="line">87</span><br><span class="line">88</span><br><span class="line">89</span><br><span class="line">90</span><br><span class="line">91</span><br><span class="line">92</span><br><span class="line">93</span><br><span class="line">94</span><br><span class="line">95</span><br><span class="line">96</span><br><span class="line">97</span><br><span class="line">98</span><br><span class="line">99</span><br><span class="line">100</span><br><span class="line">101</span><br><span class="line">102</span><br><span class="line">103</span><br><span class="line">104</span><br><span class="line">105</span><br><span class="line">106</span><br><span class="line">107</span><br><span class="line">108</span><br><span class="line">109</span><br><span class="line">110</span><br><span class="line">111</span><br><span class="line">112</span><br><span class="line">113</span><br><span class="line">114</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(f *Fit)</span></span> Filter(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status &#123;</span><br><span class="line">	s, err := getPreFilterState(cycleState)</span><br><span class="line">	<span class="keyword">if</span> err != <span class="literal">nil</span> &#123;</span><br><span class="line">		<span class="keyword">return</span> framework.AsStatus(err)</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	insufficientResources := fitsRequest(s, nodeInfo, f.ignoredResources, f.ignoredResourceGroups)</span><br><span class="line"></span><br><span class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(insufficientResources) != <span class="number">0</span> &#123;</span><br><span class="line">		<span class="comment">// We will keep all failure reasons.</span></span><br><span class="line">		failureReasons := <span class="built_in">make</span>([]<span class="type">string</span>, <span class="number">0</span>, <span class="built_in">len</span>(insufficientResources))</span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> insufficientResources &#123;</span><br><span class="line">			failureReasons = <span class="built_in">append</span>(failureReasons, insufficientResources[i].Reason)</span><br><span class="line">		&#125;</span><br><span class="line">		<span class="keyword">return</span> framework.NewStatus(framework.Unschedulable, failureReasons...)</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">return</span> <span class="literal">nil</span></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">getPreFilterState</span><span class="params">(cycleState *framework.CycleState)</span></span> (*preFilterState, <span class="type">error</span>) &#123;</span><br><span class="line">	c, err := cycleState.Read(preFilterStateKey)</span><br><span class="line">	<span class="keyword">if</span> err != <span class="literal">nil</span> &#123;</span><br><span class="line">		<span class="comment">// preFilterState doesn&#x27;t exist, likely PreFilter wasn&#x27;t invoked.</span></span><br><span class="line">		<span class="keyword">return</span> <span class="literal">nil</span>, fmt.Errorf(<span class="string">&quot;error reading %q from cycleState: %w&quot;</span>, preFilterStateKey, err)</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	s, ok := c.(*preFilterState)</span><br><span class="line">	<span class="keyword">if</span> !ok &#123;</span><br><span class="line">		<span class="keyword">return</span> <span class="literal">nil</span>, fmt.Errorf(<span class="string">&quot;%+v  convert to NodeResourcesFit.preFilterState error&quot;</span>, c)</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">return</span> s, <span class="literal">nil</span></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">fitsRequest</span><span class="params">(podRequest *preFilterState, nodeInfo *framework.NodeInfo, ignoredExtendedResources, ignoredResourceGroups sets.Set[<span class="type">string</span>])</span></span> []InsufficientResource &#123;</span><br><span class="line">	insufficientResources := <span class="built_in">make</span>([]InsufficientResource, <span class="number">0</span>, <span class="number">4</span>)</span><br><span class="line"></span><br><span class="line">	allowedPodNumber := nodeInfo.Allocatable.AllowedPodNumber</span><br><span class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(nodeInfo.Pods)+<span class="number">1</span> &gt; allowedPodNumber &#123;</span><br><span class="line">		insufficientResources = <span class="built_in">append</span>(insufficientResources, InsufficientResource&#123;</span><br><span class="line">			ResourceName: v1.ResourcePods,</span><br><span class="line">			Reason:       <span class="string">&quot;Too many pods&quot;</span>,</span><br><span class="line">			Requested:    <span class="number">1</span>,</span><br><span class="line">			Used:         <span class="type">int64</span>(<span class="built_in">len</span>(nodeInfo.Pods)),</span><br><span class="line">			Capacity:     <span class="type">int64</span>(allowedPodNumber),</span><br><span class="line">		&#125;)</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="keyword">if</span> podRequest.MilliCPU == <span class="number">0</span> &amp;&amp;</span><br><span class="line">		podRequest.Memory == <span class="number">0</span> &amp;&amp;</span><br><span class="line">		podRequest.EphemeralStorage == <span class="number">0</span> &amp;&amp;</span><br><span class="line">		<span class="built_in">len</span>(podRequest.ScalarResources) == <span class="number">0</span> &#123;</span><br><span class="line">		<span class="keyword">return</span> insufficientResources</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="keyword">if</span> podRequest.MilliCPU &gt; <span class="number">0</span> &amp;&amp; podRequest.MilliCPU &gt; (nodeInfo.Allocatable.MilliCPU-nodeInfo.Requested.MilliCPU) &#123;</span><br><span class="line">		insufficientResources = <span class="built_in">append</span>(insufficientResources, InsufficientResource&#123;</span><br><span class="line">			ResourceName: v1.ResourceCPU,</span><br><span class="line">			Reason:       <span class="string">&quot;Insufficient cpu&quot;</span>,</span><br><span class="line">			Requested:    podRequest.MilliCPU,</span><br><span class="line">			Used:         nodeInfo.Requested.MilliCPU,</span><br><span class="line">			Capacity:     nodeInfo.Allocatable.MilliCPU,</span><br><span class="line">		&#125;)</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">if</span> podRequest.Memory &gt; <span class="number">0</span> &amp;&amp; podRequest.Memory &gt; (nodeInfo.Allocatable.Memory-nodeInfo.Requested.Memory) &#123;</span><br><span class="line">		insufficientResources = <span class="built_in">append</span>(insufficientResources, InsufficientResource&#123;</span><br><span class="line">			ResourceName: v1.ResourceMemory,</span><br><span class="line">			Reason:       <span class="string">&quot;Insufficient memory&quot;</span>,</span><br><span class="line">			Requested:    podRequest.Memory,</span><br><span class="line">			Used:         nodeInfo.Requested.Memory,</span><br><span class="line">			Capacity:     nodeInfo.Allocatable.Memory,</span><br><span class="line">		&#125;)</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">if</span> podRequest.EphemeralStorage &gt; <span class="number">0</span> &amp;&amp;</span><br><span class="line">		podRequest.EphemeralStorage &gt; (nodeInfo.Allocatable.EphemeralStorage-nodeInfo.Requested.EphemeralStorage) &#123;</span><br><span class="line">		insufficientResources = <span class="built_in">append</span>(insufficientResources, InsufficientResource&#123;</span><br><span class="line">			ResourceName: v1.ResourceEphemeralStorage,</span><br><span class="line">			Reason:       <span class="string">&quot;Insufficient ephemeral-storage&quot;</span>,</span><br><span class="line">			Requested:    podRequest.EphemeralStorage,</span><br><span class="line">			Used:         nodeInfo.Requested.EphemeralStorage,</span><br><span class="line">			Capacity:     nodeInfo.Allocatable.EphemeralStorage,</span><br><span class="line">		&#125;)</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="keyword">for</span> rName, rQuant := <span class="keyword">range</span> podRequest.ScalarResources &#123;</span><br><span class="line">		<span class="comment">// Skip in case request quantity is zero</span></span><br><span class="line">		<span class="keyword">if</span> rQuant == <span class="number">0</span> &#123;</span><br><span class="line">			<span class="keyword">continue</span></span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		<span class="keyword">if</span> v1helper.IsExtendedResourceName(rName) &#123;</span><br><span class="line">			<span class="comment">// If this resource is one of the extended resources that should be ignored, we will skip checking it.</span></span><br><span class="line">			<span class="comment">// rName is guaranteed to have a slash due to API validation.</span></span><br><span class="line">			<span class="keyword">var</span> rNamePrefix <span class="type">string</span></span><br><span class="line">			<span class="keyword">if</span> ignoredResourceGroups.Len() &gt; <span class="number">0</span> &#123;</span><br><span class="line">				rNamePrefix = strings.Split(<span class="type">string</span>(rName), <span class="string">&quot;/&quot;</span>)[<span class="number">0</span>]</span><br><span class="line">			&#125;</span><br><span class="line">			<span class="keyword">if</span> ignoredExtendedResources.Has(<span class="type">string</span>(rName)) || ignoredResourceGroups.Has(rNamePrefix) &#123;</span><br><span class="line">				<span class="keyword">continue</span></span><br><span class="line">			&#125;</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		<span class="keyword">if</span> rQuant &gt; (nodeInfo.Allocatable.ScalarResources[rName] - nodeInfo.Requested.ScalarResources[rName]) &#123;</span><br><span class="line">			insufficientResources = <span class="built_in">append</span>(insufficientResources, InsufficientResource&#123;</span><br><span class="line">				ResourceName: rName,</span><br><span class="line">				Reason:       fmt.Sprintf(<span class="string">&quot;Insufficient %v&quot;</span>, rName),</span><br><span class="line">				Requested:    podRequest.ScalarResources[rName],</span><br><span class="line">				Used:         nodeInfo.Requested.ScalarResources[rName],</span><br><span class="line">				Capacity:     nodeInfo.Allocatable.ScalarResources[rName],</span><br><span class="line">			&#125;)</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="keyword">return</span> insufficientResources</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<h3 id="打分"><a href="#打分" class="headerlink" title="打分"></a>打分</h3><p>节点的优选主要是在Score阶段实现，首先在PreScore阶段计算Pod的资源请求量，然后在Score阶段根据不同策略来对节点进度打分。</p>
+<h4 id="PreScore"><a href="#PreScore" class="headerlink" title="PreScore"></a>PreScore</h4><p>PreScore函数里调用calculatePodResourceRequestList函数获取Pod的资源使用量。calculatePodResourceRequestList函数按照配置的资源依次调用calculatePodResourceRequest函数将资源数量保存在podRequests数组中并保存在cycleState中。</p>
+<figure class="highlight golang"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(f *Fit)</span></span> PreScore(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod, nodes []*framework.NodeInfo) *framework.Status &#123;</span><br><span class="line">	state := &amp;preScoreState&#123;</span><br><span class="line">		podRequests: f.calculatePodResourceRequestList(pod, f.resources),</span><br><span class="line">	&#125;</span><br><span class="line">	cycleState.Write(preScoreStateKey, state)</span><br><span class="line">	<span class="keyword">return</span> <span class="literal">nil</span></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(r *resourceAllocationScorer)</span></span> calculatePodResourceRequestList(pod *v1.Pod, resources []config.ResourceSpec) []<span class="type">int64</span> &#123;</span><br><span class="line">	podRequests := <span class="built_in">make</span>([]<span class="type">int64</span>, <span class="built_in">len</span>(resources))</span><br><span class="line">	<span class="keyword">for</span> i := <span class="keyword">range</span> resources &#123;</span><br><span class="line">		podRequests[i] = r.calculatePodResourceRequest(pod, v1.ResourceName(resources[i].Name))</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">return</span> podRequests</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(r *resourceAllocationScorer)</span></span> calculatePodResourceRequest(pod *v1.Pod, resourceName v1.ResourceName) <span class="type">int64</span> &#123;</span><br><span class="line"></span><br><span class="line">	opts := resourcehelper.PodResourcesOptions&#123;</span><br><span class="line">		UseStatusResources: r.enableInPlacePodVerticalScaling,</span><br><span class="line">		<span class="comment">// SkipPodLevelResources is set to false when PodLevelResources feature is enabled.</span></span><br><span class="line">		SkipPodLevelResources: !r.enablePodLevelResources,</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="keyword">if</span> !r.useRequested &#123;</span><br><span class="line">		opts.NonMissingContainerRequests = v1.ResourceList&#123;</span><br><span class="line">			v1.ResourceCPU:    *resource.NewMilliQuantity(schedutil.DefaultMilliCPURequest, resource.DecimalSI),</span><br><span class="line">			v1.ResourceMemory: *resource.NewQuantity(schedutil.DefaultMemoryRequest, resource.DecimalSI),</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	requests := resourcehelper.PodRequests(pod, opts)</span><br><span class="line"></span><br><span class="line">	quantity := requests[resourceName]</span><br><span class="line">	<span class="keyword">if</span> resourceName == v1.ResourceCPU &#123;</span><br><span class="line">		<span class="keyword">return</span> quantity.MilliValue()</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">return</span> quantity.Value()</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<h4 id="Score"><a href="#Score" class="headerlink" title="Score"></a>Score</h4><p>Score函数中首先调用getPreScoreState函数获取Pod的资源请求量。然后调用score函数给节点打分。score函数中对所有的资源依次调用calculateResourceAllocatableRequest计算节点的可分配总量和已分配量，并传递给scorer打分。calculateResourceAllocatableRequest函数用于计算指定节点上特定资源的可分配总量和已分配总量。</p>
+<figure class="highlight golang"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br><span class="line">45</span><br><span class="line">46</span><br><span class="line">47</span><br><span class="line">48</span><br><span class="line">49</span><br><span class="line">50</span><br><span class="line">51</span><br><span class="line">52</span><br><span class="line">53</span><br><span class="line">54</span><br><span class="line">55</span><br><span class="line">56</span><br><span class="line">57</span><br><span class="line">58</span><br><span class="line">59</span><br><span class="line">60</span><br><span class="line">61</span><br><span class="line">62</span><br><span class="line">63</span><br><span class="line">64</span><br><span class="line">65</span><br><span class="line">66</span><br><span class="line">67</span><br><span class="line">68</span><br><span class="line">69</span><br><span class="line">70</span><br><span class="line">71</span><br><span class="line">72</span><br><span class="line">73</span><br><span class="line">74</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(f *Fit)</span></span> Score(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) (<span class="type">int64</span>, *framework.Status) &#123;</span><br><span class="line">	s, err := getPreScoreState(state)</span><br><span class="line">	<span class="keyword">if</span> err != <span class="literal">nil</span> &#123;</span><br><span class="line">		s = &amp;preScoreState&#123;</span><br><span class="line">			podRequests: f.calculatePodResourceRequestList(pod, f.resources),</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="keyword">return</span> f.score(ctx, pod, nodeInfo, s.podRequests)</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(r *resourceAllocationScorer)</span></span> score(</span><br><span class="line">	ctx context.Context,</span><br><span class="line">	pod *v1.Pod,</span><br><span class="line">	nodeInfo *framework.NodeInfo,</span><br><span class="line">	podRequests []<span class="type">int64</span>) (<span class="type">int64</span>, *framework.Status) &#123;</span><br><span class="line">	logger := klog.FromContext(ctx)</span><br><span class="line">	node := nodeInfo.Node()</span><br><span class="line"></span><br><span class="line">	<span class="comment">// resources not set, nothing scheduled,</span></span><br><span class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(r.resources) == <span class="number">0</span> &#123;</span><br><span class="line">		<span class="keyword">return</span> <span class="number">0</span>, framework.NewStatus(framework.Error, <span class="string">&quot;resources not found&quot;</span>)</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	requested := <span class="built_in">make</span>([]<span class="type">int64</span>, <span class="built_in">len</span>(r.resources))</span><br><span class="line">	allocatable := <span class="built_in">make</span>([]<span class="type">int64</span>, <span class="built_in">len</span>(r.resources))</span><br><span class="line">	<span class="keyword">for</span> i := <span class="keyword">range</span> r.resources &#123;</span><br><span class="line">		alloc, req := r.calculateResourceAllocatableRequest(logger, nodeInfo, v1.ResourceName(r.resources[i].Name), podRequests[i])</span><br><span class="line">		<span class="comment">// Only fill the extended resource entry when it&#x27;s non-zero.</span></span><br><span class="line">		<span class="keyword">if</span> alloc == <span class="number">0</span> &#123;</span><br><span class="line">			<span class="keyword">continue</span></span><br><span class="line">		&#125;</span><br><span class="line">		allocatable[i] = alloc</span><br><span class="line">		requested[i] = req</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	score := r.scorer(requested, allocatable)</span><br><span class="line"></span><br><span class="line">	<span class="keyword">if</span> loggerV := logger.V(<span class="number">10</span>); loggerV.Enabled() &#123; <span class="comment">// Serializing these maps is costly.</span></span><br><span class="line">		loggerV.Info(<span class="string">&quot;Listed internal info for allocatable resources, requested resources and score&quot;</span>, <span class="string">&quot;pod&quot;</span>,</span><br><span class="line">			klog.KObj(pod), <span class="string">&quot;node&quot;</span>, klog.KObj(node), <span class="string">&quot;resourceAllocationScorer&quot;</span>, r.Name,</span><br><span class="line">			<span class="string">&quot;allocatableResource&quot;</span>, allocatable, <span class="string">&quot;requestedResource&quot;</span>, requested, <span class="string">&quot;resourceScore&quot;</span>, score,</span><br><span class="line">		)</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="keyword">return</span> score, <span class="literal">nil</span></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(r *resourceAllocationScorer)</span></span> calculateResourceAllocatableRequest(logger klog.Logger, nodeInfo *framework.NodeInfo, resource v1.ResourceName, podRequest <span class="type">int64</span>) (<span class="type">int64</span>, <span class="type">int64</span>) &#123;</span><br><span class="line">	requested := nodeInfo.NonZeroRequested</span><br><span class="line">	<span class="keyword">if</span> r.useRequested &#123;</span><br><span class="line">		requested = nodeInfo.Requested</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="comment">// If it&#x27;s an extended resource, and the pod doesn&#x27;t request it. We return (0, 0)</span></span><br><span class="line">	<span class="comment">// as an implication to bypass scoring on this resource.</span></span><br><span class="line">	<span class="keyword">if</span> podRequest == <span class="number">0</span> &amp;&amp; schedutil.IsScalarResourceName(resource) &#123;</span><br><span class="line">		<span class="keyword">return</span> <span class="number">0</span>, <span class="number">0</span></span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">switch</span> resource &#123;</span><br><span class="line">	<span class="keyword">case</span> v1.ResourceCPU:</span><br><span class="line">		<span class="keyword">return</span> nodeInfo.Allocatable.MilliCPU, (requested.MilliCPU + podRequest)</span><br><span class="line">	<span class="keyword">case</span> v1.ResourceMemory:</span><br><span class="line">		<span class="keyword">return</span> nodeInfo.Allocatable.Memory, (requested.Memory + podRequest)</span><br><span class="line">	<span class="keyword">case</span> v1.ResourceEphemeralStorage:</span><br><span class="line">		<span class="keyword">return</span> nodeInfo.Allocatable.EphemeralStorage, (nodeInfo.Requested.EphemeralStorage + podRequest)</span><br><span class="line">	<span class="keyword">default</span>:</span><br><span class="line">		<span class="keyword">if</span> _, exists := nodeInfo.Allocatable.ScalarResources[resource]; exists &#123;</span><br><span class="line">			<span class="keyword">return</span> nodeInfo.Allocatable.ScalarResources[resource], (nodeInfo.Requested.ScalarResources[resource] + podRequest)</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line">	logger.V(<span class="number">10</span>).Info(<span class="string">&quot;Requested resource is omitted for node score calculation&quot;</span>, <span class="string">&quot;resourceName&quot;</span>, resource)</span><br><span class="line">	<span class="keyword">return</span> <span class="number">0</span>, <span class="number">0</span></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>这里介绍下LeastAllocated的scorer的实现。在leastResourceScorer函数中，先调用leastRequestedScore函数根据剩余量和总量的比例作为资源得分，并根据资源的权重，计算出最终节点的得分。</p>
+<figure class="highlight golang"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">leastResourceScorer</span><span class="params">(resources []config.ResourceSpec)</span></span> <span class="function"><span class="keyword">func</span><span class="params">([]<span class="type">int64</span>, []<span class="type">int64</span>)</span></span> <span class="type">int64</span> &#123;</span><br><span class="line">	<span class="keyword">return</span> <span class="function"><span class="keyword">func</span><span class="params">(requested, allocable []<span class="type">int64</span>)</span></span> <span class="type">int64</span> &#123;</span><br><span class="line">		<span class="keyword">var</span> nodeScore, weightSum <span class="type">int64</span></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> requested &#123;</span><br><span class="line">			<span class="keyword">if</span> allocable[i] == <span class="number">0</span> &#123;</span><br><span class="line">				<span class="keyword">continue</span></span><br><span class="line">			&#125;</span><br><span class="line">			weight := resources[i].Weight</span><br><span class="line">			resourceScore := leastRequestedScore(requested[i], allocable[i])</span><br><span class="line">			nodeScore += resourceScore * weight</span><br><span class="line">			weightSum += weight</span><br><span class="line">		&#125;</span><br><span class="line">		<span class="keyword">if</span> weightSum == <span class="number">0</span> &#123;</span><br><span class="line">			<span class="keyword">return</span> <span class="number">0</span></span><br><span class="line">		&#125;</span><br><span class="line">		<span class="keyword">return</span> nodeScore / weightSum</span><br><span class="line">	&#125;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">leastRequestedScore</span><span class="params">(requested, capacity <span class="type">int64</span>)</span></span> <span class="type">int64</span> &#123;</span><br><span class="line">	<span class="keyword">if</span> capacity == <span class="number">0</span> &#123;</span><br><span class="line">		<span class="keyword">return</span> <span class="number">0</span></span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">if</span> requested &gt; capacity &#123;</span><br><span class="line">		<span class="keyword">return</span> <span class="number">0</span></span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="keyword">return</span> ((capacity - requested) * framework.MaxNodeScore) / capacity</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<h2 id="总结"><a href="#总结" class="headerlink" title="总结"></a>总结</h2><p>本文主要介绍了下用于节点资源过滤和优选的调度插件NodeResourcesFit的实现。</p>
+<h2 id="参考资料"><a href="#参考资料" class="headerlink" title="参考资料"></a>参考资料</h2><p><a target="_blank" rel="noopener" href="https://github.com/kubernetes/kubernetes/tree/v1.33.5">https://github.com/kubernetes/kubernetes/tree/v1.33.5</a></p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="http://zhouli-95.github.io/2026/02/25/scheduler%E4%B8%AD%E7%9A%84NodeResourcesFit%E5%AE%9E%E7%8E%B0/" data-id="cmqc9fwbn000ki9qw59gf9id1" data-title="scheduler中的NodeResourcesFit实现" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/kubernetes/" rel="tag">kubernetes</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/scheduler/" rel="tag">scheduler</a></li></ul>
+
+    </footer>
+  </div>
+  
+    
+<nav id="article-nav">
+  
+  
+    <a href="/2026/02/22/kubernetes%E4%B8%AD%E7%9A%84scheduling-framework%E4%BB%8B%E7%BB%8D/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">后一篇</strong>
+      <div class="article-nav-title">kubernetes中的scheduling-framework介绍</div>
+    </a>
+  
+</nav>
+
+  
+</article>
+
+
+</section>
+        
+          <aside id="sidebar">
+  
+    
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签</h3>
+    <div class="widget">
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/cdi/" rel="tag">cdi</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/containerd/" rel="tag">containerd</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/device-plugin/" rel="tag">device-plugin</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/kubernetes/" rel="tag">kubernetes</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/scheduler/" rel="tag">scheduler</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/cdi/" style="font-size: 12.5px;">cdi</a> <a href="/tags/containerd/" style="font-size: 10px;">containerd</a> <a href="/tags/device-plugin/" style="font-size: 17.5px;">device-plugin</a> <a href="/tags/kubernetes/" style="font-size: 20px;">kubernetes</a> <a href="/tags/scheduler/" style="font-size: 15px;">scheduler</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/02/">二月 2026</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/12/">十二月 2025</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/11/">十一月 2025</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/10/">十月 2025</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/04/">四月 2025</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/03/">三月 2025</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/02/">二月 2025</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/01/">一月 2025</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">最新文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2026/02/25/scheduler%E4%B8%AD%E7%9A%84NodeResourcesFit%E5%AE%9E%E7%8E%B0/">scheduler中的NodeResourcesFit实现</a>
+          </li>
+        
+          <li>
+            <a href="/2026/02/22/kubernetes%E4%B8%AD%E7%9A%84scheduling-framework%E4%BB%8B%E7%BB%8D/">kubernetes中的scheduling-framework介绍</a>
+          </li>
+        
+          <li>
+            <a href="/2025/12/31/kubernetes%E4%B8%AD%E8%8A%82%E7%82%B9%E4%B8%8A%E7%9A%84%E6%8B%93%E6%89%91%E4%BA%B2%E5%92%8C/">kubernetes中节点上的设备拓扑亲和</a>
+          </li>
+        
+          <li>
+            <a href="/2025/12/06/kubernetes%E4%B8%AD%E7%9A%84%E8%AE%BE%E5%A4%87%E5%88%86%E9%85%8D/">kubernetes中的设备分配</a>
+          </li>
+        
+          <li>
+            <a href="/2025/11/01/containerd%E4%B8%ADCDI%E7%9A%84%E5%AE%9E%E7%8E%B0/">containerd中CDI的实现</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      
+      &copy; 2026 Li Zhou<br>
+      Powered by <a href="https://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">Home</a>
+  
+    <a href="/archives" class="mobile-nav-link">Archives</a>
+  
+</nav>
+    
+
+
+<script src="/js/jquery-3.6.4.min.js"></script>
+
+
+
+  
+<script src="/fancybox/jquery.fancybox.min.js"></script>
+
+
+
+
+<script src="/js/script.js"></script>
+
+
+
+
+
+  </div>
+</body>
+</html>

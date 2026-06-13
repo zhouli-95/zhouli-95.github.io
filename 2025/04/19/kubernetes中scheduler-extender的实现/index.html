@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  
+  <title>kubernetes中scheduler-extender的实现 | Li Zhou&#39;s blog</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+  <meta name="description" content="本文将介绍下kubernetes调度器中的extender机制，以及如何实现一个基于设备拓扑的extender插件。 基本介绍什么是extender在kubernetes中是由调度器来决定Pod最终在哪个节点上运行的。如果想要自定义调度行为，通常有以下几种方式。第一种是直接修改调度器的源码并重新编译运行。第二种方式是自己实现一个调度器，第三种方式是实现extender插件，原生调度器可以通过调用该">
+<meta property="og:type" content="article">
+<meta property="og:title" content="kubernetes中scheduler-extender的实现">
+<meta property="og:url" content="http://zhouli-95.github.io/2025/04/19/kubernetes%E4%B8%ADscheduler-extender%E7%9A%84%E5%AE%9E%E7%8E%B0/index.html">
+<meta property="og:site_name" content="Li Zhou&#39;s blog">
+<meta property="og:description" content="本文将介绍下kubernetes调度器中的extender机制，以及如何实现一个基于设备拓扑的extender插件。 基本介绍什么是extender在kubernetes中是由调度器来决定Pod最终在哪个节点上运行的。如果想要自定义调度行为，通常有以下几种方式。第一种是直接修改调度器的源码并重新编译运行。第二种方式是自己实现一个调度器，第三种方式是实现extender插件，原生调度器可以通过调用该">
+<meta property="og:locale" content="zh_CN">
+<meta property="article:published_time" content="2025-04-19T14:24:39.000Z">
+<meta property="article:modified_time" content="2025-05-31T13:06:14.257Z">
+<meta property="article:author" content="Li Zhou">
+<meta property="article:tag" content="kubernetes">
+<meta property="article:tag" content="scheduler">
+<meta name="twitter:card" content="summary">
+  
+    <link rel="alternate" href="/atom.xml" title="Li Zhou's blog" type="application/atom+xml">
+  
+  
+    <link rel="shortcut icon" href="/favicon.png">
+  
+  
+  
+<link rel="stylesheet" href="/css/style.css">
+
+  
+    
+<link rel="stylesheet" href="/fancybox/jquery.fancybox.min.css">
+
+  
+  
+<meta name="generator" content="Hexo 7.3.0"></head>
+
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap">
+        <a href="/" id="logo">Li Zhou&#39;s blog</a>
+      </h1>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"><span class="fa fa-bars"></span></a>
+        
+          <a class="main-nav-link" href="/">Home</a>
+        
+          <a class="main-nav-link" href="/archives">Archives</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+        
+          <a class="nav-icon" href="/atom.xml" title="RSS 订阅"><span class="fa fa-rss"></span></a>
+        
+        <a class="nav-icon nav-search-btn" title="搜索"><span class="fa fa-search"></span></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="//google.com/search" method="get" accept-charset="UTF-8" class="search-form"><input type="search" name="q" class="search-form-input" placeholder="搜索"><button type="submit" class="search-form-submit">&#xF002;</button><input type="hidden" name="sitesearch" value="http://zhouli-95.github.io"></form>
+      </div>
+    </div>
+  </div>
+</header>
+
+      <div class="outer">
+        <section id="main"><article id="post-kubernetes中scheduler-extender的实现" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2025/04/19/kubernetes%E4%B8%ADscheduler-extender%E7%9A%84%E5%AE%9E%E7%8E%B0/" class="article-date">
+  <time class="dt-published" datetime="2025-04-19T14:24:39.000Z" itemprop="datePublished">2025-04-19</time>
+</a>
+    
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 class="p-name article-title" itemprop="headline name">
+      kubernetes中scheduler-extender的实现
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <p>本文将介绍下kubernetes调度器中的extender机制，以及如何实现一个基于设备拓扑的extender插件。</p>
+<h2 id="基本介绍"><a href="#基本介绍" class="headerlink" title="基本介绍"></a>基本介绍</h2><h3 id="什么是extender"><a href="#什么是extender" class="headerlink" title="什么是extender"></a>什么是extender</h3><p>在kubernetes中是由调度器来决定Pod最终在哪个节点上运行的。如果想要自定义调度行为，通常有以下几种方式。第一种是直接修改调度器的源码并重新编译运行。第二种方式是自己实现一个调度器，第三种方式是实现extender插件，原生调度器可以通过调用该插件来影响最终的调度结果。extender机制目前提供了3个扩展点，一个是filter阶段用于过滤节点，这个阶段可以过滤掉不满足要求的节点，一个是prioritize阶段，这个阶段用于给满足要求的节点打分，通过分数来描述不同节点的优先程度，调度器最终会根据打分以及不同插件的权重计算出最终的得分，最终选择得分最高的节点调度。还有一个是bind阶段，这个阶段用于把Pod绑定到最终的节点上，绑定之后，对应节点上的kubelet会检测到该调度事件并在节点上运行该Pod。</p>
+<h3 id="为什么有extender"><a href="#为什么有extender" class="headerlink" title="为什么有extender"></a>为什么有extender</h3><p>上面提到了自定义调度器的几种方式，extender机制相比前两种方式具有以下几个优势，一个是对原生调度器没有侵入式修改，不需要适配不同版本的调度器代码，一个是可以天然集成原生调度器的能力。但是由于extender目前只提供了3个基础的扩展点，因此不太适合实现一些逻辑复杂的高级调度机制。此外，由于extender是以web server + http的方式提供接口，在调度Pod时存在一定时延，在规模较大时可能存在性能问题。目前社区已经提供了新的scheduling-framework机制用于扩展调度器行为，后续我们再做介绍。</p>
+<h2 id="实现"><a href="#实现" class="headerlink" title="实现"></a>实现</h2><h3 id="调度器配置"><a href="#调度器配置" class="headerlink" title="调度器配置"></a>调度器配置</h3><p>首先看下注册extender需要的配置，最核心的配置包括实现extender的web server的地址，以及实现filter和prioritize等接口的URL路径，还有插件的权重。</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br></pre></td><td class="code"><pre><span class="line">// Holds the parameters used to communicate with the extender. If a verb is unspecified/empty,</span><br><span class="line">// it is assumed that the extender chose not to provide that extension.</span><br><span class="line">type ExtenderConfig struct &#123;</span><br><span class="line">	// URLPrefix at which the extender is available</span><br><span class="line">	URLPrefix string `json:&quot;urlPrefix&quot;`</span><br><span class="line">	// Verb for the filter call, empty if not supported. This verb is appended to the URLPrefix when issuing the filter call to extender.</span><br><span class="line">	FilterVerb string `json:&quot;filterVerb,omitempty&quot;`</span><br><span class="line">	// Verb for the prioritize call, empty if not supported. This verb is appended to the URLPrefix when issuing the prioritize call to extender.</span><br><span class="line">	PrioritizeVerb string `json:&quot;prioritizeVerb,omitempty&quot;`</span><br><span class="line">	// Verb for the bind call, empty if not supported. This verb is appended to the URLPrefix when issuing the bind call to extender.</span><br><span class="line">	// If this method is implemented by the extender, it is the extender&#x27;s responsibility to bind the pod to apiserver.</span><br><span class="line">	BindVerb string `json:&quot;bindVerb,omitempty&quot;`</span><br><span class="line">	// The numeric multiplier for the node scores that the prioritize call generates.</span><br><span class="line">	// The weight should be a positive integer</span><br><span class="line">	Weight int `json:&quot;weight,omitempty&quot;`</span><br><span class="line">	// EnableHttps specifies whether https should be used to communicate with the extender</span><br><span class="line">	EnableHttps bool `json:&quot;enableHttps,omitempty&quot;`</span><br><span class="line">	// TLSConfig specifies the transport layer security config</span><br><span class="line">	TLSConfig *client.TLSClientConfig `json:&quot;tlsConfig,omitempty&quot;`</span><br><span class="line">	// HTTPTimeout specifies the timeout duration for a call to the extender. Filter timeout fails the scheduling of the pod. Prioritize</span><br><span class="line">	// timeout is ignored, k8s/other extenders priorities are used to select the node.</span><br><span class="line">	HTTPTimeout time.Duration `json:&quot;httpTimeout,omitempty&quot;`</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>示例的调度器配置如下。</p>
+<figure class="highlight yaml"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br></pre></td><td class="code"><pre><span class="line"><span class="attr">apiVersion:</span> <span class="string">kubescheduler.config.k8s.io/v1</span></span><br><span class="line"><span class="attr">kind:</span> <span class="string">KubeSchedulerConfiguration</span></span><br><span class="line"><span class="attr">profiles:</span></span><br><span class="line">    <span class="bullet">-</span> <span class="attr">schedulerName:</span> <span class="string">demo-extender</span></span><br><span class="line"><span class="attr">leaderElection:</span></span><br><span class="line">    <span class="attr">leaderElect:</span> <span class="literal">false</span></span><br><span class="line"><span class="attr">extenders:</span></span><br><span class="line"><span class="bullet">-</span> <span class="attr">urlPrefix:</span> <span class="string">&quot;http://localhost:8080&quot;</span></span><br><span class="line">    <span class="attr">enableHTTPS:</span> <span class="literal">false</span></span><br><span class="line">    <span class="attr">filterVerb:</span> <span class="string">&quot;filter&quot;</span></span><br><span class="line">    <span class="attr">prioritizeVerb:</span> <span class="string">&quot;prioritize&quot;</span></span><br><span class="line">    <span class="attr">bindVerb:</span> <span class="string">&quot;bind&quot;</span></span><br><span class="line">    <span class="attr">weight:</span> <span class="number">1</span></span><br><span class="line">    <span class="attr">nodeCacheCapable:</span> <span class="literal">false</span></span><br></pre></td></tr></table></figure>
+
+<h3 id="filter"><a href="#filter" class="headerlink" title="filter"></a>filter</h3><p>filter阶段的实现逻辑比较简单，这个阶段的目标是为了过滤掉不满足的节点。我们首先遍历所有节点上的设备拓扑注解，并计算出节点上当前设备的可用数量，然后和Pod请求的设备数量做比较，如果满足则加入到最终满足条件的节点列表中。</p>
+<figure class="highlight golang"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br><span class="line">45</span><br><span class="line">46</span><br><span class="line">47</span><br><span class="line">48</span><br><span class="line">49</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(e *Extender)</span></span> Filter(args extenderv1.ExtenderArgs) *extenderv1.ExtenderFilterResult &#123;</span><br><span class="line">	result := &amp;extenderv1.ExtenderFilterResult&#123;</span><br><span class="line">		Nodes:     &amp;corev1.NodeList&#123;&#125;,</span><br><span class="line">		NodeNames: &amp;[]<span class="type">string</span>&#123;&#125;,</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="keyword">for</span> _, node := <span class="keyword">range</span> args.Nodes.Items &#123;</span><br><span class="line">		<span class="keyword">if</span> annos, ok := node.Annotations[device.DeviceZoneAnnotationKey]; ok &#123;</span><br><span class="line">			zones := device.DeviceZoneList&#123;&#125;</span><br><span class="line">			<span class="keyword">if</span> err := json.Unmarshal([]<span class="type">byte</span>(annos), &amp;zones); err != <span class="literal">nil</span> &#123;</span><br><span class="line">				klog.Errorf(<span class="string">&quot;failed to unmarshal, %v&quot;</span>, err)</span><br><span class="line">				<span class="keyword">continue</span></span><br><span class="line">			&#125;</span><br><span class="line"></span><br><span class="line">			available := getAvailableInZones(zones)</span><br><span class="line">			request := getRequestInPod(args.Pod)</span><br><span class="line">			<span class="keyword">if</span> available &gt;= request &#123;</span><br><span class="line">				result.Nodes.Items = <span class="built_in">append</span>(result.Nodes.Items, node)</span><br><span class="line">				*result.NodeNames = <span class="built_in">append</span>(*result.NodeNames, node.Name)</span><br><span class="line">			&#125;</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(result.Nodes.Items) == <span class="number">0</span> &#123;</span><br><span class="line">		<span class="keyword">return</span> &amp;extenderv1.ExtenderFilterResult&#123;</span><br><span class="line">			Error: errors.New(<span class="string">&quot;no available node&quot;</span>).Error(),</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">return</span> result</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">getAvailableInZones</span><span class="params">(zones device.DeviceZoneList)</span></span> <span class="type">int</span> &#123;</span><br><span class="line">	cnt := <span class="number">0</span></span><br><span class="line">	<span class="keyword">for</span> _, zone := <span class="keyword">range</span> zones &#123;</span><br><span class="line">		cnt += <span class="built_in">len</span>(zone.UnusedList)</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">return</span> cnt</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">getRequestInPod</span><span class="params">(pod *corev1.Pod)</span></span> <span class="type">int</span> &#123;</span><br><span class="line">	request := <span class="number">0</span></span><br><span class="line">	<span class="keyword">for</span> _, cntr := <span class="keyword">range</span> pod.Spec.Containers &#123;</span><br><span class="line">		v := cntr.Resources.Limits[corev1.ResourceName(device.DeviceName)]</span><br><span class="line">		<span class="keyword">if</span> cnt, ok := v.AsInt64(); ok &#123;</span><br><span class="line">			request += <span class="type">int</span>(cnt)</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">return</span> request</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<h3 id="prioritize"><a href="#prioritize" class="headerlink" title="prioritize"></a>prioritize</h3><p>prioritize阶段主要是通过一定规则给节点打分，最终挑选出最合适的节点。这个阶段我们根据节点的可用设备信息以及Pod申请的设备数量给节点打分，并把最终的分数标准化后返回给调度器。</p>
+<figure class="highlight golang"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(e *Extender)</span></span> Prioritize(args extenderv1.ExtenderArgs) *extenderv1.HostPriorityList &#123;</span><br><span class="line">	hostPriorityList := <span class="built_in">make</span>(extenderv1.HostPriorityList, <span class="built_in">len</span>(args.Nodes.Items))</span><br><span class="line">	<span class="keyword">for</span> i, node := <span class="keyword">range</span> args.Nodes.Items &#123;</span><br><span class="line">		<span class="keyword">var</span> score <span class="type">int64</span> = <span class="number">0</span></span><br><span class="line">		<span class="keyword">if</span> annos, ok := node.Annotations[device.DeviceZoneAnnotationKey]; ok &#123;</span><br><span class="line">			zones := device.DeviceZoneList&#123;&#125;</span><br><span class="line">			<span class="keyword">if</span> err := json.Unmarshal([]<span class="type">byte</span>(annos), &amp;zones); err != <span class="literal">nil</span> &#123;</span><br><span class="line">				klog.Errorf(<span class="string">&quot;failed to unmarshal, %v&quot;</span>, err)</span><br><span class="line">			&#125; <span class="keyword">else</span> &#123;</span><br><span class="line">				score = e.scorer.Score(zones, getRequestInPod(args.Pod))</span><br><span class="line">			&#125;</span><br><span class="line">		&#125;</span><br><span class="line">		hostPriorityList[i] = extenderv1.HostPriority&#123;</span><br><span class="line">			Host:  node.Name,</span><br><span class="line">			Score: score,</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line">	klog.Infof(<span class="string">&quot;prioritize for pod %s/%s %v&quot;</span>, args.Pod.Namespace, args.Pod.Name, hostPriorityList)</span><br><span class="line">	e.scorer.NormalizeScore(extenderv1.MaxExtenderPriority, hostPriorityList)</span><br><span class="line">	<span class="keyword">return</span> &amp;hostPriorityList</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>打分的逻辑在Score函数中实现，首先是根据剩余的设备拓扑以及申请的设备数量，遍历得到可能的分配组合。然后从这些组合中选择出分数最高的分配方式，并返回最高的分数作为节点的分数。</p>
+<figure class="highlight golang"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(s *ZoneScorer)</span></span> Score(zones device.DeviceZoneList, num <span class="type">int</span>) <span class="type">int64</span> &#123;</span><br><span class="line">	unusedInZone := <span class="built_in">make</span>([]<span class="type">int</span>, <span class="built_in">len</span>(zones))</span><br><span class="line">	<span class="keyword">for</span> i := <span class="keyword">range</span> zones &#123;</span><br><span class="line">		unusedInZone[i] = <span class="built_in">len</span>(zones[i].UnusedList)</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	combs := allocate.GenCombinations(unusedInZone, num)</span><br><span class="line">	_, score := allocate.GetBestAllocate(combs)</span><br><span class="line"></span><br><span class="line">	<span class="keyword">return</span> <span class="type">int64</span>(score)</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">GetBestAllocate</span><span class="params">(combinations [][]<span class="type">int</span>)</span></span> (<span class="type">int</span>, <span class="type">int</span>) &#123;</span><br><span class="line">	maxScore := <span class="number">0</span></span><br><span class="line">	idx := <span class="number">0</span></span><br><span class="line">	<span class="keyword">for</span> i, arr := <span class="keyword">range</span> combinations &#123;</span><br><span class="line">		score := <span class="number">0</span></span><br><span class="line">		<span class="keyword">for</span> _, e := <span class="keyword">range</span> arr &#123;</span><br><span class="line">			score += getScore(e)</span><br><span class="line">		&#125;</span><br><span class="line">		<span class="keyword">if</span> score &gt; maxScore &#123;</span><br><span class="line">			maxScore = score</span><br><span class="line">			idx = i</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">return</span> idx, maxScore</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">getScore</span><span class="params">(n <span class="type">int</span>)</span></span> <span class="type">int</span> &#123;</span><br><span class="line">	<span class="keyword">if</span> n &lt;= <span class="number">1</span> &#123;</span><br><span class="line">		<span class="keyword">return</span> <span class="number">0</span></span><br><span class="line">	&#125;</span><br><span class="line">	r := <span class="number">1</span></span><br><span class="line">	<span class="keyword">for</span> i := <span class="number">1</span>; i &lt; n; i++ &#123;</span><br><span class="line">		r *= i</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">return</span> r</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>分数的标准化主要是将原先的分数转换成用百分制表示的分数，方便后续的比较和处理。NormalizeScore函数会先找到列表中分数最高的分数，并把最高分作为分母，然后把所有的分数按比例转换为用百分制表示的分数。</p>
+<figure class="highlight golang"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(s *ZoneScorer)</span></span> NormalizeScore(maxPriority <span class="type">int64</span>, scores extenderv1.HostPriorityList) &#123;</span><br><span class="line">	<span class="keyword">var</span> maxVal <span class="type">int64</span> = <span class="number">0</span></span><br><span class="line">	<span class="keyword">for</span> i := <span class="keyword">range</span> scores &#123;</span><br><span class="line">		<span class="keyword">if</span> scores[i].Score &gt; maxVal &#123;</span><br><span class="line">			maxVal = scores[i].Score</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="keyword">for</span> i := <span class="keyword">range</span> scores &#123;</span><br><span class="line">		<span class="keyword">if</span> maxVal == <span class="number">0</span> &#123;</span><br><span class="line">			scores[i].Score = maxPriority</span><br><span class="line">			<span class="keyword">continue</span></span><br><span class="line">		&#125;</span><br><span class="line">		score := scores[i].Score</span><br><span class="line">		score = maxPriority * score / maxVal</span><br><span class="line">		scores[i].Score = score</span><br><span class="line">	&#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<h3 id="bind"><a href="#bind" class="headerlink" title="bind"></a>bind</h3><p>bind阶段的实现也比较简单，主要是把Pod绑定到对应的节点上，在这个阶段可以做一些资源的准备动作。</p>
+<figure class="highlight golang"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(e *Extender)</span></span> Bind(args extenderv1.ExtenderBindingArgs) *extenderv1.ExtenderBindingResult &#123;</span><br><span class="line">	result := &amp;extenderv1.ExtenderBindingResult&#123;&#125;</span><br><span class="line">	klog.Infof(<span class="string">&quot;bind pod %s/%s to node %s&quot;</span>, args.PodNamespace, args.PodName, args.Node)</span><br><span class="line">	binding := &amp;corev1.Binding&#123;</span><br><span class="line">		ObjectMeta: metav1.ObjectMeta&#123;Namespace: args.PodNamespace, Name: args.PodName, UID: args.PodUID&#125;,</span><br><span class="line">		Target:     corev1.ObjectReference&#123;Kind: <span class="string">&quot;Node&quot;</span>, Name: args.Node&#125;,</span><br><span class="line">	&#125;</span><br><span class="line">	err := e.k8sClient.CoreV1().Pods(binding.Namespace).Bind(context.TODO(), binding, metav1.CreateOptions&#123;&#125;)</span><br><span class="line">	<span class="keyword">if</span> err != <span class="literal">nil</span> &#123;</span><br><span class="line">		klog.Errorf(<span class="string">&quot;failed to bind %v&quot;</span>, err)</span><br><span class="line">		result.Error = err.Error()</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">return</span> result</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<h2 id="验证"><a href="#验证" class="headerlink" title="验证"></a>验证</h2><p>首先我们用kind搭建了一个有2个worker节点的集群，并且每个worker节点上有8个 <code>example.om/demo</code> 设备，并且分为两组。</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">NAME                        STATUS   ROLES           AGE   VERSION</span><br><span class="line">k8s-cluster-control-plane   Ready    control-plane   4d    v1.32.2</span><br><span class="line">k8s-cluster-worker          Ready    &lt;none&gt;          4d    v1.32.2</span><br><span class="line">k8s-cluster-worker2         Ready    &lt;none&gt;          4d    v1.32.2</span><br></pre></td></tr></table></figure>
+
+<p>我们先创建带有2个 <code>example.om/demo</code> 设备的pod。此时调度到了k8s-cluster-worker节点。</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">NAME                                  READY   STATUS    RESTARTS      AGE     IP            NODE</span><br><span class="line">demo-pod2                             1/1     Running   0             3m38s   10.244.2.13   k8s-cluster-worker</span><br></pre></td></tr></table></figure>
+
+<p>然后创建带有3个 <code>example.om/demo</code> 设备的pod。此时依旧调度到了k8s-cluster-worker节点。</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">NAME                                  READY   STATUS    RESTARTS      AGE     IP            NODE</span><br><span class="line">demo-pod2                             1/1     Running   0             4m35s   10.244.2.13   k8s-cluster-worker</span><br><span class="line">demo-pod3                             1/1     Running   0             4s      10.244.2.14   k8s-cluster-worker</span><br></pre></td></tr></table></figure>
+
+<p>之后再创建带有3个 <code>example.om/demo</code> 设备的pod。此时调度到了k8s-cluster-worker2节点。因为此时k8s-cluster-worker2节点相比k8s-cluster-worker节点具有更高的分数。</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">NAME                                  READY   STATUS    RESTARTS      AGE     IP            NODE</span><br><span class="line">demo-pod2                             1/1     Running   0             5m30s   10.244.2.13   k8s-cluster-worker</span><br><span class="line">demo-pod3                             1/1     Running   0             59s     10.244.2.14   k8s-cluster-worker</span><br><span class="line">demo-pod3-1                           1/1     Running   0             25s     10.244.1.13   k8s-cluster-worker2</span><br></pre></td></tr></table></figure>
+
+<p>从日志上也可以佐证，虽然k8s-cluster-worker2节点和k8s-cluster-worker节点都满足调度的基本要求，但是k8s-cluster-worker2节点上因为可以把3个设备放入到一个组内，而k8s-cluster-worker节点上3个设备必须分散到两个组，所以k8s-cluster-worker2节点的分数更高。</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">I0426 14:36:41.980157       1 server.go:36] filter result &amp;[k8s-cluster-worker k8s-cluster-worker2]</span><br><span class="line">I0426 14:36:41.986499       1 extender.go:97] prioritize for pod default/demo-pod3-1 [&#123;k8s-cluster-worker 1&#125; &#123;k8s-cluster-worker2 2&#125;]</span><br><span class="line">I0426 14:36:41.986582       1 server.go:57] prioritize result &amp;[&#123;k8s-cluster-worker 5&#125; &#123;k8s-cluster-worker2 10&#125;]</span><br><span class="line">I0426 14:36:41.987908       1 extender.go:104] bind pod default/demo-pod3-1 to node k8s-cluster-worker2</span><br></pre></td></tr></table></figure>
+
+<h2 id="总结"><a href="#总结" class="headerlink" title="总结"></a>总结</h2><p>本文简单介绍了下kubernetes中调度器的extender机制，后续会继续介绍scheduling-framework</p>
+<h2 id="参考资料"><a href="#参考资料" class="headerlink" title="参考资料"></a>参考资料</h2><p><a target="_blank" rel="noopener" href="https://github.com/kubernetes/design-proposals-archive/blob/main/scheduling/scheduler_extender.md">https://github.com/kubernetes/design-proposals-archive/blob/main/scheduling/scheduler_extender.md</a><br><a target="_blank" rel="noopener" href="https://developer.ibm.com/articles/creating-a-custom-kube-scheduler/">https://developer.ibm.com/articles/creating-a-custom-kube-scheduler/</a></p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="http://zhouli-95.github.io/2025/04/19/kubernetes%E4%B8%ADscheduler-extender%E7%9A%84%E5%AE%9E%E7%8E%B0/" data-id="cmqc9fwbh0004i9qwcwak3d5v" data-title="kubernetes中scheduler-extender的实现" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/kubernetes/" rel="tag">kubernetes</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/scheduler/" rel="tag">scheduler</a></li></ul>
+
+    </footer>
+  </div>
+  
+    
+<nav id="article-nav">
+  
+    <a href="/2025/10/26/kubernetes%E4%B8%AD%E7%9A%84CDI%E4%BB%8B%E7%BB%8D/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">前一篇</strong>
+      <div class="article-nav-title">
+        
+          kubernetes中的CDI介绍
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2025/03/23/kubernetes%E4%B8%AD%E7%9A%84device-plugin%E7%9A%84%E8%8A%82%E7%82%B9%E9%97%B4%E4%BC%98%E5%85%88%E5%88%86%E9%85%8D/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">后一篇</strong>
+      <div class="article-nav-title">kubernetes中的device-plugin的节点间优先分配</div>
+    </a>
+  
+</nav>
+
+  
+</article>
+
+
+</section>
+        
+          <aside id="sidebar">
+  
+    
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签</h3>
+    <div class="widget">
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/cdi/" rel="tag">cdi</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/containerd/" rel="tag">containerd</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/device-plugin/" rel="tag">device-plugin</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/kubernetes/" rel="tag">kubernetes</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/scheduler/" rel="tag">scheduler</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/cdi/" style="font-size: 12.5px;">cdi</a> <a href="/tags/containerd/" style="font-size: 10px;">containerd</a> <a href="/tags/device-plugin/" style="font-size: 17.5px;">device-plugin</a> <a href="/tags/kubernetes/" style="font-size: 20px;">kubernetes</a> <a href="/tags/scheduler/" style="font-size: 15px;">scheduler</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/02/">二月 2026</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/12/">十二月 2025</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/11/">十一月 2025</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/10/">十月 2025</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/04/">四月 2025</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/03/">三月 2025</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/02/">二月 2025</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/01/">一月 2025</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">最新文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2026/02/25/scheduler%E4%B8%AD%E7%9A%84NodeResourcesFit%E5%AE%9E%E7%8E%B0/">scheduler中的NodeResourcesFit实现</a>
+          </li>
+        
+          <li>
+            <a href="/2026/02/22/kubernetes%E4%B8%AD%E7%9A%84scheduling-framework%E4%BB%8B%E7%BB%8D/">kubernetes中的scheduling-framework介绍</a>
+          </li>
+        
+          <li>
+            <a href="/2025/12/31/kubernetes%E4%B8%AD%E8%8A%82%E7%82%B9%E4%B8%8A%E7%9A%84%E6%8B%93%E6%89%91%E4%BA%B2%E5%92%8C/">kubernetes中节点上的设备拓扑亲和</a>
+          </li>
+        
+          <li>
+            <a href="/2025/12/06/kubernetes%E4%B8%AD%E7%9A%84%E8%AE%BE%E5%A4%87%E5%88%86%E9%85%8D/">kubernetes中的设备分配</a>
+          </li>
+        
+          <li>
+            <a href="/2025/11/01/containerd%E4%B8%ADCDI%E7%9A%84%E5%AE%9E%E7%8E%B0/">containerd中CDI的实现</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      
+      &copy; 2026 Li Zhou<br>
+      Powered by <a href="https://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">Home</a>
+  
+    <a href="/archives" class="mobile-nav-link">Archives</a>
+  
+</nav>
+    
+
+
+<script src="/js/jquery-3.6.4.min.js"></script>
+
+
+
+  
+<script src="/fancybox/jquery.fancybox.min.js"></script>
+
+
+
+
+<script src="/js/script.js"></script>
+
+
+
+
+
+  </div>
+</body>
+</html>

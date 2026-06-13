@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  
+  <title>kubernetes中的device-plugin的节点内优先分配 | Li Zhou&#39;s blog</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+  <meta name="description" content="本文将介绍下kubernetes中的device-plugin如何使用GetPreferredAllocation接口来实现节点内设备的优先分配。 基本介绍什么是节点内优先分配前面的文章介绍了device-plugin负责节点内设备的分配工作，而设备的的优先分配指的是在分配时可以让某些设备被优先分配使用。 为什么需要优先分配在实际场景中，即使是相同型号的设备，由于设备之间可能存在的互联关系，或者因">
+<meta property="og:type" content="article">
+<meta property="og:title" content="kubernetes中的device-plugin的节点内优先分配">
+<meta property="og:url" content="http://zhouli-95.github.io/2025/03/22/kubernetes%E4%B8%AD%E7%9A%84device-plugin%E7%9A%84%E8%8A%82%E7%82%B9%E5%86%85%E4%BC%98%E5%85%88%E5%88%86%E9%85%8D/index.html">
+<meta property="og:site_name" content="Li Zhou&#39;s blog">
+<meta property="og:description" content="本文将介绍下kubernetes中的device-plugin如何使用GetPreferredAllocation接口来实现节点内设备的优先分配。 基本介绍什么是节点内优先分配前面的文章介绍了device-plugin负责节点内设备的分配工作，而设备的的优先分配指的是在分配时可以让某些设备被优先分配使用。 为什么需要优先分配在实际场景中，即使是相同型号的设备，由于设备之间可能存在的互联关系，或者因">
+<meta property="og:locale" content="zh_CN">
+<meta property="article:published_time" content="2025-03-22T14:38:24.000Z">
+<meta property="article:modified_time" content="2025-05-31T13:06:14.261Z">
+<meta property="article:author" content="Li Zhou">
+<meta property="article:tag" content="kubernetes">
+<meta property="article:tag" content="device-plugin">
+<meta name="twitter:card" content="summary">
+  
+    <link rel="alternate" href="/atom.xml" title="Li Zhou's blog" type="application/atom+xml">
+  
+  
+    <link rel="shortcut icon" href="/favicon.png">
+  
+  
+  
+<link rel="stylesheet" href="/css/style.css">
+
+  
+    
+<link rel="stylesheet" href="/fancybox/jquery.fancybox.min.css">
+
+  
+  
+<meta name="generator" content="Hexo 7.3.0"></head>
+
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap">
+        <a href="/" id="logo">Li Zhou&#39;s blog</a>
+      </h1>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"><span class="fa fa-bars"></span></a>
+        
+          <a class="main-nav-link" href="/">Home</a>
+        
+          <a class="main-nav-link" href="/archives">Archives</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+        
+          <a class="nav-icon" href="/atom.xml" title="RSS 订阅"><span class="fa fa-rss"></span></a>
+        
+        <a class="nav-icon nav-search-btn" title="搜索"><span class="fa fa-search"></span></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="//google.com/search" method="get" accept-charset="UTF-8" class="search-form"><input type="search" name="q" class="search-form-input" placeholder="搜索"><button type="submit" class="search-form-submit">&#xF002;</button><input type="hidden" name="sitesearch" value="http://zhouli-95.github.io"></form>
+      </div>
+    </div>
+  </div>
+</header>
+
+      <div class="outer">
+        <section id="main"><article id="post-kubernetes中的device-plugin的节点内优先分配" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2025/03/22/kubernetes%E4%B8%AD%E7%9A%84device-plugin%E7%9A%84%E8%8A%82%E7%82%B9%E5%86%85%E4%BC%98%E5%85%88%E5%88%86%E9%85%8D/" class="article-date">
+  <time class="dt-published" datetime="2025-03-22T14:38:24.000Z" itemprop="datePublished">2025-03-22</time>
+</a>
+    
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 class="p-name article-title" itemprop="headline name">
+      kubernetes中的device-plugin的节点内优先分配
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <p>本文将介绍下kubernetes中的device-plugin如何使用GetPreferredAllocation接口来实现节点内设备的优先分配。</p>
+<h2 id="基本介绍"><a href="#基本介绍" class="headerlink" title="基本介绍"></a>基本介绍</h2><h3 id="什么是节点内优先分配"><a href="#什么是节点内优先分配" class="headerlink" title="什么是节点内优先分配"></a>什么是节点内优先分配</h3><p>前面的文章介绍了device-plugin负责节点内设备的分配工作，而设备的的优先分配指的是在分配时可以让某些设备被优先分配使用。</p>
+<h3 id="为什么需要优先分配"><a href="#为什么需要优先分配" class="headerlink" title="为什么需要优先分配"></a>为什么需要优先分配</h3><p>在实际场景中，即使是相同型号的设备，由于设备之间可能存在的互联关系，或者因为设备和CPU存在的物理拓扑关系，导致不同的设备分配组合对应用存在差异。 以NVIDIA的GPU设备为例，由于部分设备之间存在互联拓扑，因此任意两个设备之间的通信并不是完全相同的，比如0号GPU和1号GPU之间有NVLink，而0号GPU和4号GPU之间没有NVLink，那么如果一个任务要申请2个GPU，分配0号和1号的使用效果要好于0号和4号GPU。因此需要使用优先分配机制来根据物理拓扑等条件来选择出最合适的设备列表。</p>
+<h2 id="实现"><a href="#实现" class="headerlink" title="实现"></a>实现</h2><p>接下来看下在device-plugin中如何实现节点内设备的优先分配。首先看下官方提供的GetPreferredAllocation接口，该接口可以让device-plugin返回一个优先使用的设备列表，我们也是使用该接口来达到设备优先分配的效果。这里我们将设备分成两个组，优先分配的逻辑是尽可能将请求的设备分配到一个组内。需要注意的是，kubelet中的devicemanager并不一定会将该返回结果作为最终的分配结果。</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">service DevicePlugin &#123;</span><br><span class="line">      // GetPreferredAllocation returns a preferred set of devices to allocate</span><br><span class="line">      // from a list of available ones. The resulting preferred allocation is not</span><br><span class="line">      // guaranteed to be the allocation ultimately performed by the</span><br><span class="line">      // devicemanager. It is only designed to help the devicemanager make a more</span><br><span class="line">      // informed allocation decision when possible.</span><br><span class="line">      rpc GetPreferredAllocation(PreferredAllocationRequest) returns (PreferredAllocationResponse) &#123;&#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>首先需要先在GetDevicePluginOptions接口中设置GetPreferredAllocationAvailable选项。以便GetPreferredAllocation接口能够被正常调用。</p>
+<figure class="highlight golang"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(plugin *DemoDevicePlugin)</span></span> GetDevicePluginOptions(context.Context, *pluginapi.Empty) (*pluginapi.DevicePluginOptions, <span class="type">error</span>) &#123;</span><br><span class="line">	options := &amp;pluginapi.DevicePluginOptions&#123;</span><br><span class="line">		GetPreferredAllocationAvailable: <span class="literal">true</span>,</span><br><span class="line">		PreStartRequired:                <span class="literal">false</span>,</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">return</span> options, <span class="literal">nil</span></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>然后看下GetPreferredAllocation的实现，我们这里实现的比较简单，使用封装的PerferedAllocate函数来获取优先分配的设备列表，然后设置到对应的ContainerPreferredAllocationResponse中。这里说明下，请求中的AvailableDeviceIDs表示当前可用的设备列表，MustIncludeDeviceIDs表示必须包含的设备列表，AllocationSize表示该次请求申请的设备数量。</p>
+<figure class="highlight golang"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(p *DemoDevicePlugin)</span></span> GetPreferredAllocation(ctx context.Context, r *pluginapi.PreferredAllocationRequest) (*pluginapi.PreferredAllocationResponse, <span class="type">error</span>) &#123;</span><br><span class="line">	response := &amp;pluginapi.PreferredAllocationResponse&#123;&#125;</span><br><span class="line"></span><br><span class="line">	<span class="keyword">for</span> _, req := <span class="keyword">range</span> r.ContainerRequests &#123;</span><br><span class="line">		allocList := allocate.PerferedAllocate(p.devList, req.AvailableDeviceIDs, req.MustIncludeDeviceIDs, <span class="type">int</span>(req.AllocationSize))</span><br><span class="line">		response.ContainerResponses = <span class="built_in">append</span>(response.ContainerResponses, &amp;pluginapi.ContainerPreferredAllocationResponse&#123;</span><br><span class="line">			DeviceIDs: allocList,</span><br><span class="line">		&#125;)</span><br><span class="line">		klog.Infof(<span class="string">&quot;preferred allocate %v&quot;</span>, allocList)</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">return</span> response, <span class="literal">nil</span></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>PerferedAllocate函数主要分为三步，第一步是根据当前可用的设备列表并扣除必须包含的设备列表，计算出每个组剩余可分配的设备列表，第二步是根据申请的数量以及当前每组可用的设备列表计算出可能的组合情况，并计算每种组合的得分，找到最优的分配组合，最后一步是从可用的列表中按照最优分配选择出最终的设备列表。</p>
+<figure class="highlight golang"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">PerferedAllocate</span><span class="params">(devList []*device.DemoDevice, avaiList, mustList []<span class="type">string</span>, allocSize <span class="type">int</span>)</span></span> []<span class="type">string</span> &#123;</span><br><span class="line">	usedList := getUsedList(devList, avaiList, mustList)</span><br><span class="line">	zoneList := GetAvailableZone(devList, usedList)</span><br><span class="line">	avaiInZone := getAvailableInZone(zoneList)</span><br><span class="line"></span><br><span class="line">	combs := GenCombinations(avaiInZone, allocSize-<span class="built_in">len</span>(mustList))</span><br><span class="line">	mustInZone := getMustInZone(devList, <span class="built_in">len</span>(zoneList), mustList)</span><br><span class="line">	newCombs := getCombinationIncludeMust(combs, mustInZone)</span><br><span class="line">	idx := getBestAllocate(newCombs)</span><br><span class="line"></span><br><span class="line">	result := []<span class="type">string</span>&#123;&#125;</span><br><span class="line">	result = <span class="built_in">append</span>(result, mustList...)</span><br><span class="line">	result = <span class="built_in">append</span>(result, pickDeviceInZone(zoneList, combs[idx])...)</span><br><span class="line">	<span class="keyword">return</span> result</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>GetAvailableZone函数首先根据现有设备的拓扑分组，并计算每组剩余可分配的设备列表。目前构造的分组逻辑是0-3号设备为一组，4-7号设备为一组。然后根据设备的ID和分组的ID对结果进行排序。</p>
+<figure class="highlight golang"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">GetAvailableZone</span><span class="params">(devList []*device.DemoDevice, usedList []<span class="type">string</span>)</span></span> []*device.DeviceZone &#123;</span><br><span class="line">	zoneMap := <span class="keyword">map</span>[<span class="type">int</span>]*device.DeviceZone&#123;&#125;</span><br><span class="line">	<span class="keyword">for</span> _, dev := <span class="keyword">range</span> devList &#123;</span><br><span class="line">		<span class="keyword">if</span> _, ok := zoneMap[dev.Zone]; !ok &#123;</span><br><span class="line">			zoneMap[dev.Zone] = &amp;device.DeviceZone&#123;Id: dev.Zone&#125;</span><br><span class="line">		&#125;</span><br><span class="line">		zoneMap[dev.Zone].DeviceList = <span class="built_in">append</span>(zoneMap[dev.Zone].DeviceList, dev.UUID)</span><br><span class="line">		<span class="keyword">if</span> !slices.Contains(usedList, dev.UUID) &#123;</span><br><span class="line">			zoneMap[dev.Zone].UnusedList = <span class="built_in">append</span>(zoneMap[dev.Zone].UnusedList, dev.UUID)</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line">	zoneList := []*device.DeviceZone&#123;&#125;</span><br><span class="line">	<span class="keyword">for</span> _, zone := <span class="keyword">range</span> zoneMap &#123;</span><br><span class="line">		slices.Sort(zone.UnusedList)</span><br><span class="line">		zoneList = <span class="built_in">append</span>(zoneList, zone)</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	sort.Slice(zoneList, <span class="function"><span class="keyword">func</span><span class="params">(i, j <span class="type">int</span>)</span></span> <span class="type">bool</span> &#123;</span><br><span class="line">		<span class="keyword">return</span> zoneList[i].Id &lt; zoneList[j].Id</span><br><span class="line">	&#125;)</span><br><span class="line">	<span class="keyword">return</span> zoneList</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">getUsedList</span><span class="params">(devList []*device.DemoDevice, avaiList, mustList []<span class="type">string</span>)</span></span> []<span class="type">string</span> &#123;</span><br><span class="line">	result := []<span class="type">string</span>&#123;&#125;</span><br><span class="line">	<span class="keyword">for</span> _, dev := <span class="keyword">range</span> devList &#123;</span><br><span class="line">		<span class="keyword">if</span> !slices.Contains(avaiList, dev.UUID) &#123;</span><br><span class="line">			result = <span class="built_in">append</span>(result, dev.UUID)</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line">	result = <span class="built_in">append</span>(result, mustList...)</span><br><span class="line">	<span class="keyword">return</span> result</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">getAvailableInZone</span><span class="params">(zones []*device.DeviceZone)</span></span> []<span class="type">int</span> &#123;</span><br><span class="line">	zoneList := []<span class="type">int</span>&#123;&#125;</span><br><span class="line">	<span class="keyword">for</span> _, zone := <span class="keyword">range</span> zones &#123;</span><br><span class="line">		zoneList = <span class="built_in">append</span>(zoneList, <span class="built_in">len</span>(zone.UnusedList))</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">return</span> zoneList</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>GenCombinations函数主要是根据不同分组剩余的资源情况以及资源的申请量计算出可能的组合情况。</p>
+<figure class="highlight golang"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br><span class="line">45</span><br><span class="line">46</span><br><span class="line">47</span><br><span class="line">48</span><br><span class="line">49</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">GenCombinations</span><span class="params">(arr []<span class="type">int</span>, n <span class="type">int</span>)</span></span> [][]<span class="type">int</span> &#123;</span><br><span class="line">	<span class="keyword">var</span> result [][]<span class="type">int</span></span><br><span class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(arr) == <span class="number">0</span> &#123;</span><br><span class="line">		<span class="keyword">return</span> result</span><br><span class="line">	&#125;</span><br><span class="line">	helper(arr, n, <span class="number">0</span>, []<span class="type">int</span>&#123;&#125;, &amp;result)</span><br><span class="line">	<span class="keyword">return</span> result</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">helper</span><span class="params">(arr []<span class="type">int</span>, remain <span class="type">int</span>, idx <span class="type">int</span>, curCombo []<span class="type">int</span>, result *[][]<span class="type">int</span>)</span></span> &#123;</span><br><span class="line">	<span class="keyword">if</span> idx == <span class="built_in">len</span>(arr)<span class="number">-1</span> &#123;</span><br><span class="line">		<span class="keyword">if</span> remain &lt;= arr[idx] &#123;</span><br><span class="line">			newCombo := <span class="built_in">make</span>([]<span class="type">int</span>, <span class="built_in">len</span>(curCombo)+<span class="number">1</span>)</span><br><span class="line">			<span class="built_in">copy</span>(newCombo[:<span class="built_in">len</span>(curCombo)], curCombo)</span><br><span class="line">			newCombo[<span class="built_in">len</span>(curCombo)] = remain</span><br><span class="line">			*result = <span class="built_in">append</span>(*result, newCombo)</span><br><span class="line">		&#125;</span><br><span class="line">		<span class="keyword">return</span></span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="keyword">for</span> i := <span class="number">0</span>; i &lt;= arr[idx] &amp;&amp; i &lt;= remain; i++ &#123;</span><br><span class="line">		newCombo := <span class="built_in">make</span>([]<span class="type">int</span>, <span class="built_in">len</span>(curCombo)+<span class="number">1</span>)</span><br><span class="line">		<span class="built_in">copy</span>(newCombo[:<span class="built_in">len</span>(curCombo)], curCombo)</span><br><span class="line">		newCombo[<span class="built_in">len</span>(curCombo)] = i</span><br><span class="line">		helper(arr, remain-i, idx+<span class="number">1</span>, newCombo, result)</span><br><span class="line">	&#125;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">getMustInZone</span><span class="params">(devList []*device.DemoDevice, sz <span class="type">int</span>, must []<span class="type">string</span>)</span></span> []<span class="type">int</span> &#123;</span><br><span class="line">	zoneList := <span class="built_in">make</span>([]<span class="type">int</span>, sz)</span><br><span class="line">	<span class="keyword">for</span> _, dev := <span class="keyword">range</span> devList &#123;</span><br><span class="line">		<span class="keyword">if</span> slices.Contains(must, dev.UUID) &#123;</span><br><span class="line">			zoneList[dev.Zone]++</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">return</span> zoneList</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">getCombinationIncludeMust</span><span class="params">(combs [][]<span class="type">int</span>, must []<span class="type">int</span>)</span></span> [][]<span class="type">int</span> &#123;</span><br><span class="line">	newCombs := [][]<span class="type">int</span>&#123;&#125;</span><br><span class="line">	<span class="keyword">for</span> _, com := <span class="keyword">range</span> combs &#123;</span><br><span class="line">		tmp := <span class="built_in">make</span>([]<span class="type">int</span>, <span class="built_in">len</span>(com))</span><br><span class="line">		<span class="keyword">for</span> i := <span class="number">0</span>; i &lt; <span class="built_in">len</span>(com); i++ &#123;</span><br><span class="line">			tmp[i] = com[i] + must[i]</span><br><span class="line">		&#125;</span><br><span class="line">		newCombs = <span class="built_in">append</span>(newCombs, tmp)</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">return</span> newCombs</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>getBestAllocate函数用于对分配组合打分，选出分数最高的分配组合。这里使用阶乘来体现同一组内使用的数量越多得分比重越高。</p>
+<figure class="highlight golang"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">getBestAllocate</span><span class="params">(combinations [][]<span class="type">int</span>)</span></span> <span class="type">int</span> &#123;</span><br><span class="line">	maxScore := <span class="number">0</span></span><br><span class="line">	idx := <span class="number">0</span></span><br><span class="line">	<span class="keyword">for</span> i, arr := <span class="keyword">range</span> combinations &#123;</span><br><span class="line">		score := <span class="number">0</span></span><br><span class="line">		<span class="keyword">for</span> _, e := <span class="keyword">range</span> arr &#123;</span><br><span class="line">			score += getScore(e)</span><br><span class="line">		&#125;</span><br><span class="line">		<span class="keyword">if</span> score &gt; maxScore &#123;</span><br><span class="line">			maxScore = score</span><br><span class="line">			idx = i</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">return</span> idx</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">getScore</span><span class="params">(n <span class="type">int</span>)</span></span> <span class="type">int</span> &#123;</span><br><span class="line">	<span class="keyword">if</span> n == <span class="number">1</span> &#123;</span><br><span class="line">		<span class="keyword">return</span> <span class="number">0</span></span><br><span class="line">	&#125;</span><br><span class="line">	r := <span class="number">1</span></span><br><span class="line">	<span class="keyword">for</span> i := <span class="number">1</span>; i &lt; n<span class="number">-1</span>; i++ &#123;</span><br><span class="line">		r *= i</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">return</span> r</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>pickDeviceInZone函数用于从当前的分组中按照指定的分配组合获取最终的设备列表。</p>
+<figure class="highlight golang"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">pickDeviceInZone</span><span class="params">(zones []*device.DeviceZone, selected []<span class="type">int</span>)</span></span> []<span class="type">string</span> &#123;</span><br><span class="line">	result := []<span class="type">string</span>&#123;&#125;</span><br><span class="line">	<span class="keyword">for</span> i := <span class="number">0</span>; i &lt; <span class="built_in">len</span>(zones); i++ &#123;</span><br><span class="line">		result = <span class="built_in">append</span>(result, zones[i].UnusedList[<span class="number">0</span>:selected[i]]...)</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">return</span> result</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<h2 id="验证"><a href="#验证" class="headerlink" title="验证"></a>验证</h2><p>然后我们来验证下上述的分配策略是否生效。目前我们构造了8个 <code>example.om/demo</code> 设备。并且按照4个一组，将设备分为两组。即0-3号设备为一组，4-7号设备为一组。</p>
+<p>我们首先申请了一个<code>example.om/demo</code> 设备，此时分配的是DEMO-4，然后再申请4个<code>example.om/demo</code> 设备，此时分配的是DEMO-0,DEMO-1,DEMO-2,DEMO-3。说明第二个pod分配的设备是在独立的一个组中。</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">root@demo-pod1:/# env</span><br><span class="line">HOSTNAME=demo-pod</span><br><span class="line">DEV_ID=DEMO-4</span><br><span class="line"></span><br><span class="line">root@demo-pod4:/# env</span><br><span class="line">HOSTNAME=demo-pod1</span><br><span class="line">DEV_ID=DEMO-0,DEMO-1,DEMO-2,DEMO-3</span><br></pre></td></tr></table></figure>
+
+<h2 id="总结"><a href="#总结" class="headerlink" title="总结"></a>总结</h2><p>本文简单介绍了下如何使用GetPreferredAllocation来实现节点内设备的优先分配。该功能一般在设备之间存在特定拓扑结构的场景下使用。后续将会介绍如何实现节点间设备的优先分配。</p>
+<h2 id="参考资料"><a href="#参考资料" class="headerlink" title="参考资料"></a>参考资料</h2><p><a target="_blank" rel="noopener" href="https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/device-plugins/">https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/device-plugins/</a></p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="http://zhouli-95.github.io/2025/03/22/kubernetes%E4%B8%AD%E7%9A%84device-plugin%E7%9A%84%E8%8A%82%E7%82%B9%E5%86%85%E4%BC%98%E5%85%88%E5%88%86%E9%85%8D/" data-id="cmqc9fwbj0008i9qwdam97o68" data-title="kubernetes中的device-plugin的节点内优先分配" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/device-plugin/" rel="tag">device-plugin</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/kubernetes/" rel="tag">kubernetes</a></li></ul>
+
+    </footer>
+  </div>
+  
+    
+<nav id="article-nav">
+  
+    <a href="/2025/03/23/kubernetes%E4%B8%AD%E7%9A%84device-plugin%E7%9A%84%E8%8A%82%E7%82%B9%E9%97%B4%E4%BC%98%E5%85%88%E5%88%86%E9%85%8D/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">前一篇</strong>
+      <div class="article-nav-title">
+        
+          kubernetes中的device-plugin的节点间优先分配
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2025/02/16/kubernetes%E4%B8%AD%E7%9A%84device-plugin%E7%9A%84%E5%9F%BA%E6%9C%AC%E4%BB%8B%E7%BB%8D/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">后一篇</strong>
+      <div class="article-nav-title">kubernetes中的device-plugin的基本介绍</div>
+    </a>
+  
+</nav>
+
+  
+</article>
+
+
+</section>
+        
+          <aside id="sidebar">
+  
+    
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签</h3>
+    <div class="widget">
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/cdi/" rel="tag">cdi</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/containerd/" rel="tag">containerd</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/device-plugin/" rel="tag">device-plugin</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/kubernetes/" rel="tag">kubernetes</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/scheduler/" rel="tag">scheduler</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/cdi/" style="font-size: 12.5px;">cdi</a> <a href="/tags/containerd/" style="font-size: 10px;">containerd</a> <a href="/tags/device-plugin/" style="font-size: 17.5px;">device-plugin</a> <a href="/tags/kubernetes/" style="font-size: 20px;">kubernetes</a> <a href="/tags/scheduler/" style="font-size: 15px;">scheduler</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/02/">二月 2026</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/12/">十二月 2025</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/11/">十一月 2025</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/10/">十月 2025</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/04/">四月 2025</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/03/">三月 2025</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/02/">二月 2025</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/01/">一月 2025</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">最新文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2026/02/25/scheduler%E4%B8%AD%E7%9A%84NodeResourcesFit%E5%AE%9E%E7%8E%B0/">scheduler中的NodeResourcesFit实现</a>
+          </li>
+        
+          <li>
+            <a href="/2026/02/22/kubernetes%E4%B8%AD%E7%9A%84scheduling-framework%E4%BB%8B%E7%BB%8D/">kubernetes中的scheduling-framework介绍</a>
+          </li>
+        
+          <li>
+            <a href="/2025/12/31/kubernetes%E4%B8%AD%E8%8A%82%E7%82%B9%E4%B8%8A%E7%9A%84%E6%8B%93%E6%89%91%E4%BA%B2%E5%92%8C/">kubernetes中节点上的设备拓扑亲和</a>
+          </li>
+        
+          <li>
+            <a href="/2025/12/06/kubernetes%E4%B8%AD%E7%9A%84%E8%AE%BE%E5%A4%87%E5%88%86%E9%85%8D/">kubernetes中的设备分配</a>
+          </li>
+        
+          <li>
+            <a href="/2025/11/01/containerd%E4%B8%ADCDI%E7%9A%84%E5%AE%9E%E7%8E%B0/">containerd中CDI的实现</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      
+      &copy; 2026 Li Zhou<br>
+      Powered by <a href="https://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">Home</a>
+  
+    <a href="/archives" class="mobile-nav-link">Archives</a>
+  
+</nav>
+    
+
+
+<script src="/js/jquery-3.6.4.min.js"></script>
+
+
+
+  
+<script src="/fancybox/jquery.fancybox.min.js"></script>
+
+
+
+
+<script src="/js/script.js"></script>
+
+
+
+
+
+  </div>
+</body>
+</html>
